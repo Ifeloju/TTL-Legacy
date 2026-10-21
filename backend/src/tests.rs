@@ -64,6 +64,10 @@ fn test_app_with_db(db: Arc<Db>) -> Router {
         )
         .route("/notifications/unsubscribe", get(routes::unsubscribe))
         .route("/reminders/check-in", get(routes::resolve_reminder_token))
+        .route(
+            "/vaults/:vault_id/integrity-report",
+            get(routes::get_integrity_report),
+        )
         .with_state(state)
 }
 

@@ -369,3 +369,31 @@ pub struct AuditExportQuery {
 /// Exports the vault's audit trail. Only the vault owner may export. The
 
 /* … truncated 3428 chars — edit only what you need near the top … */
+
+// ── Issue #1845: Integrity Report Endpoint ───────────────────────────────────
+
+/// `GET /vaults/{vault_id}/integrity-report`
+///
+/// Triggers an on-demand integrity check for the specified vault by invoking
+/// `generate_integrity_report_handler`. The handler computes a deterministic
+/// SHA-256-like checksum over the vault's key fields (mirroring the Soroban
+/// contract's `verify_vault_integrity` function) and returns the result as an
+/// `IntegrityReportResponse`.
+///
+/// Only the vault owner should call this endpoint; unauthenticated callers
+/// receive a 404 when the vault does not exist.
+///
+/// # Errors
+/// - `404 Not Found` — vault does not exist in the store.
+#[instrument(skip(state), fields(vault_id = %vault_id))]
+pub async fn get_integrity_report(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::db::AppState>>,
+    axum::extract::Path(vault_id): axum::extract::Path<String>,
+) -> Result<axum::Json<crate::handlers::vault::IntegrityReportResponse>, crate::error::AppError> {
+    let report = crate::handlers::vault::generate_integrity_report_handler(
+        &state.vault_store,
+        &vault_id,
+    )
+    .map_err(|_| crate::error::AppError::NotFound)?;
+    Ok(axum::Json(report))
+}
