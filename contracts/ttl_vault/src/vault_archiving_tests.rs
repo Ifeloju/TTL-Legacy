@@ -244,4 +244,68 @@ mod tests {
             "Anyone should be able to archive a released vault"
         );
     }
+
+    /// Test that `restore_vault` extends the persistent entry TTL to at least
+    /// `VAULT_TTL_LEDGERS` (200 000 ledgers) — not to the Soroban minimum of 17.
+    ///
+    /// Issue #1844: after restoring an archived vault the persistent storage
+    /// entry must be bumped to the contract's maximum TTL so the vault cannot
+    /// immediately become re-archivable.
+    #[test]
+    fn test_restore_vault_extends_ttl_to_contract_max() {
+        use soroban_sdk::testutils::storage::Persistent as _;
+
+        // Build a full environment identical to the canonical setup() in test.rs.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let owner = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let admin = Address::generate(&env);
+
+        let token_admin = Address::generate(&env);
+        let token_address = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+
+        soroban_sdk::token::StellarAssetClient::new(&env, &token_address).mint(&owner, &1_000_000);
+
+        let contract_address = env.register_contract(None, TtlVaultContract);
+        let client = TtlVaultContractClient::new(&env, &contract_address);
+        client.initialize(&token_address, &admin);
+
+        let client: TtlVaultContractClient<'static> = unsafe { core::mem::transmute(client) };
+
+        // Create a vault with a 1-day check-in interval.
+        let check_in_interval: u64 = 86_400; // 1 day in seconds
+        let vault_id = client.create_vault(&owner, &beneficiary, &check_in_interval, &None);
+
+        // Simulate the vault's persistent entry TTL decaying to the Soroban
+        // minimum (17 ledgers) by advancing the ledger sequence far enough that
+        // the entry would be considered archived/near-expiry.
+        //
+        // vault_ttl_ledgers(86_400) = max(86_400 * 2 / 5, VAULT_TTL_LEDGERS) = 200_000.
+        // Advance past VAULT_TTL_LEDGERS so the persistent entry TTL is minimal.
+        let advance = VAULT_TTL_LEDGERS + 1_000;
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + advance);
+
+        // Call restore_vault — this must extend the persistent entry TTL back to
+        // at least vault_ttl_ledgers(check_in_interval) >= VAULT_TTL_LEDGERS.
+        client.restore_vault(&vault_id);
+
+        // Read the actual persistent TTL now that the vault is restored.
+        let ttl_after_restore = env.as_contract(&contract_address, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&StorageKey::Vault(vault_id))
+        });
+
+        assert!(
+            ttl_after_restore >= VAULT_TTL_LEDGERS,
+            "restore_vault must extend persistent entry TTL to at least VAULT_TTL_LEDGERS \
+             ({VAULT_TTL_LEDGERS} ledgers); got {ttl_after_restore} ledgers. \
+             The vault would be immediately re-archivable."
+        );
+    }
 }
