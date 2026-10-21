@@ -65,14 +65,72 @@ Related documents: [Threat Model & Security](security.md) · [Security Policy](.
 - [ ] Host function budget (CPU / memory) is not exhausted in worst-case loops
 - [ ] Ledger entry size limits are respected for `Vec<BeneficiaryEntry>` and metadata
 
-## 8. Token Handling
+## 8. Soroban-Specific Attack Surfaces
+
+> These items address attack classes that are unique to the Soroban / Stellar
+> execution model and are not covered by standard smart-contract checklists.
+
+### 8.1 Reentrancy via Cross-Contract Calls
+
+- [ ] All vault state mutations (balance decrement, status change) are committed to
+  persistent storage **before** any outbound cross-contract call (e.g. `token.transfer`,
+  `zk_verifier.verify`)
+- [ ] No cross-contract call is made between a `storage().persistent().get()` read and
+  the corresponding `storage().persistent().set()` write on the same key
+- [ ] Cross-contract calls that could call back into this contract (directly or via a
+  forwarding contract) are identified and their reentrancy impact documented
+- [ ] The `assert_not_paused` guard is checked **before** any cross-contract call path
+  so a paused contract cannot be re-entered through an external contract
+
+### 8.2 TTL Manipulation
+
+- [ ] A malicious caller cannot supply an arbitrarily large `check_in_interval` to
+  extend `vault_ttl_ledgers` beyond `MAX_PERSISTENT_TTL` (saturating arithmetic is
+  applied before `clamp`)
+- [ ] `check_in` rejects intervals that would set the next deadline beyond
+  `max_ttl_seconds` (prevents permanent TTL lock-in)
+- [ ] `restore_vault` extends the persistent entry TTL to at least `VAULT_TTL_LEDGERS`
+  — callers cannot trigger a restore that leaves the vault immediately re-archivable
+  (minimum-TTL attack)
+- [ ] `ping_expiry` / `get_ttl_remaining` do not allow an attacker to learn exact
+  remaining ledger counts that could be used to front-run a TTL expiry
+- [ ] Instance storage TTL is bumped on every state-mutating call so the contract
+  itself cannot be archived while individual vaults are still active
+
+### 8.3 Ledger Sequence Replay
+
+- [ ] Time-sensitive operations (check-in deadlines, hibernation windows, vesting
+  start/end) are gated on `env.ledger().timestamp()`, not caller-supplied values
+- [ ] No operation allows a caller to replay a previously valid ledger state by
+  manipulating `last_check_in` or `created_at` fields directly
+- [ ] The contract does not accept nonces or sequence numbers supplied by the caller
+  that could be reused across transactions to replay an earlier authorization
+- [ ] `multisig` pending operations include the ledger sequence at submission time
+  and reject execution if the sequence has not advanced (prevents same-ledger replay)
+- [ ] Operations that depend on elapsed time (e.g. dispute window expiry) are
+  recalculated from `env.ledger().timestamp()` on each invocation rather than cached
+  in storage, preventing stale-timestamp replay
+
+### 8.4 Storage Key Collision Attacks
+
+- [ ] Every `StorageKey` variant encodes its vault ID or owner address so that
+  keys for different vaults/owners cannot overlap (no bare numeric keys)
+- [ ] `StorageKey` is reviewed after every new feature to confirm no two variants
+  produce the same serialised byte sequence under any input
+- [ ] Persistent, instance, and temporary storage namespaces are never mixed for
+  the same logical data (e.g. a vault entry is always `Persistent`, never `Temporary`)
+- [ ] Upgrading the contract does not re-use a `StorageKey` variant for a different
+  data type than it held in the previous version (migration notes required)
+- [ ] The `storage_key_collision_tests.rs` suite passes with no skipped cases
+
+## 9. Token Handling
 
 - [ ] Only whitelisted token addresses are accepted in `create_vault`
 - [ ] `token.transfer` return value is not silently ignored
 - [ ] Contract never holds more balance than the sum of all vault balances
 - [ ] XLM token address is validated at `initialize` time
 
-## 9. Beneficiary & Vesting
+## 10. Beneficiary & Vesting
 
 - [ ] Vesting schedule `total_amount` matches vault balance at schedule creation
 - [ ] `claim_vested_installment` is only callable after `trigger_release`
@@ -80,7 +138,7 @@ Related documents: [Threat Model & Security](security.md) · [Security Policy](.
 - [ ] Declined beneficiary blocks `trigger_release` (`InvalidBeneficiary`)
 - [ ] Dispute status `Filed` blocks release until resolved
 
-## 10. Upgrade & Versioning
+## 11. Upgrade & Versioning
 
 - [ ] Contract version is stored and readable via `get_contract_version`
 - [ ] Any upgrade path preserves existing vault data layout
